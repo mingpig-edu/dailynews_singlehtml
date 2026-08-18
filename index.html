@@ -16,7 +16,7 @@
 
 <section class="panel" aria-label="主題設定"><h2>主題</h2><div class="control-grid"><div class="field"><label for="topicInput">每日新聞主題</label><input id="topicInput" autocomplete="off" maxlength="120" placeholder="例如：3D 列印、人工智能教育、香港教育政策"></div><button id="applyTopic" type="button">切換主題並產生今天新聞</button><button id="refreshToday" type="button">立即更新今天</button></div><p class="hint">同一天可保存多個不同主題；同一主題再次更新時，只會覆蓋該主題今天的版本，不會刪除其他日期或其他主題。</p></section>
 
-<section class="panel" aria-label="Gemini API Key 設定"><h2>Gemini API Key</h2><div class="key-grid"><div class="field"><label for="apiKeyInput">自己的 API Key</label><input id="apiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="貼上新的 Key；已儲存時毋須再次輸入"></div><button id="saveKey" type="button">儲存／測試 Key</button><button id="forgetKey" type="button">忘記 Key</button></div><label class="checkline"><input id="rememberKey" type="checkbox" checked> 記住在此瀏覽器（下次毋須再輸入）</label><p class="key-state" id="keyState">檢查中…</p><p class="security-note">這是 BYOK 個人工具。若選擇「記住」，Key 會儲存在這個瀏覽器的網站資料中；不要在公共或共用電腦使用。HTML 本身不包含任何 API Key，也不會把 Key 傳給 GDELT。</p></section>
+<section class="panel" aria-label="Gemini API Key 設定"><h2>Gemini API Key</h2><div class="key-grid"><div class="field"><label for="apiKeyInput">自己的 API Key</label><input id="apiKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="貼上新的 Key；已儲存時毋須再次輸入"></div><button id="saveKey" type="button">儲存／測試 Key</button><button id="forgetKey" type="button">忘記 Key</button></div><label class="checkline"><input id="rememberKey" type="checkbox" checked> 記住在此瀏覽器（下次毋須再輸入）</label><p class="key-state" id="keyState">檢查中…</p><p class="security-note">這是 BYOK 個人工具。若選擇「記住」，Key 會儲存在這個瀏覽器的網站資料中；不要在公共或共用電腦使用。HTML 本身不包含任何 API Key；Gemini Key 只由瀏覽器直接傳給 Google Gemini API，不會傳給新聞中繼服務。</p></section>
 
 <div class="notice" id="notice" hidden></div>
 <div class="progress" id="progress" aria-live="polite"></div>
@@ -31,16 +31,16 @@
 
 <details class="data-tools"><summary>資料管理（備份／還原）</summary><div class="data-actions"><button id="exportData" type="button">匯出歷史 JSON</button><label class="file-label">匯入歷史 JSON<input id="importData" type="file" accept="application/json,.json"></label><button id="clearData" type="button">清除所有歷史</button></div><p class="hint">匯出的備份不包含 Gemini API Key。歷史新聞保存在此瀏覽器的 IndexedDB；清除網站資料或更換瀏覽器前，建議先匯出備份。</p></details>
 
-<footer><p>新聞候選資料來自 GDELT DOC 2.0；Gemini 只用來篩選、翻譯標題及根據提供的標題／來源資料做保守整理，不使用 Google Search grounding。每日自動更新的意思是：當此頁在新的一天首次被打開（或重新回到前景）而當天尚無目前主題的日報，就自動補生成一次；瀏覽器完全關閉時不會在背景執行。</p></footer>
+<footer><p>新聞候選資料由本站的 Vercel /api/news 中繼服務向 GDELT DOC 2.0 取得；Gemini 只用來篩選、翻譯標題及根據提供的標題／來源資料做保守整理，不使用 Google Search grounding。每日自動更新的意思是：當此頁在新的一天首次被打開（或重新回到前景）而當天尚無目前主題的日報，就自動補生成一次；瀏覽器完全關閉時不會在背景執行。</p></footer>
 </main>
 <script>
 "use strict";
-const VERSION="0.3.0";
+const VERSION="0.3.1";
 const DB_NAME="daily-topic-brief-byok";
 const DB_VERSION=1;
 const STORE_REPORTS="reports";
 const API_BASE="https://generativelanguage.googleapis.com/v1beta";
-const GDELT_URL="https://api.gdeltproject.org/api/v2/doc/doc";
+const NEWS_API_URL="/api/news";
 const MAX_ITEMS=10;
 const MAX_CANDIDATES=45;
 const SETTINGS={topic:"dtb.topic",key:"dtb.geminiKey",remember:"dtb.rememberKey"};
@@ -79,7 +79,47 @@ function runHistorySearch(query){const q=String(query||"").trim();if(!q)return;c
 function sanitizeTopicQuery(topic){return String(topic).normalize("NFKC").replace(/[()"<>]/g," ").replace(/\s+/g," ").trim().slice(0,180)}
 function normalizeUrl(value=""){try{const u=new URL(value);for(const k of [...u.searchParams.keys()])if(/^(utm_|fbclid|gclid)/i.test(k))u.searchParams.delete(k);u.hash="";return u.toString()}catch{return value}}
 function dedupeArticles(items){const seenU=new Set(),seenT=new Set(),out=[];for(const a of items){const u=normalizeUrl(a.url||""),t=norm(a.title);if(!u||!t||seenU.has(u)||seenT.has(t))continue;seenU.add(u);seenT.add(t);out.push({...a,url:u})}return out}
-async function gdeltOnce(topic,timespan){const url=new URL(GDELT_URL);url.searchParams.set("query",sanitizeTopicQuery(topic));url.searchParams.set("mode","artlist");url.searchParams.set("maxrecords","75");url.searchParams.set("timespan",timespan);url.searchParams.set("sort","datedesc");url.searchParams.set("format","json");const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),18000);try{const response=await fetch(url.toString(),{signal:controller.signal});if(!response.ok)throw new Error(`GDELT HTTP ${response.status}`);const data=await response.json();const raw=Array.isArray(data.articles)?data.articles:Array.isArray(data.items)?data.items:Array.isArray(data.results)?data.results:[];return dedupeArticles(raw.map(a=>{const uri=a.url||a.link||a.uri||"";let domain=a.domain||a.source||"";if(!domain&&uri){try{domain=new URL(uri).hostname.replace(/^www\./,"")}catch{}}return{title:cleanText(a.title||a.name||""),url:uri,domain:domain||"來源不明",seen_date:a.seendate||a.date||a.datetime||"",language:a.language||"",sourcecountry:a.sourcecountry||a.country||"",image:a.socialimage||a.image||""}}).filter(a=>a.title&&/^https?:\/\//i.test(a.url)))}finally{clearTimeout(timer)}}
+async function gdeltOnce(topic,timespan){
+  const url=new URL(NEWS_API_URL,window.location.origin);
+  url.searchParams.set("topic",sanitizeTopicQuery(topic));
+  url.searchParams.set("timespan",timespan);
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),22000);
+  try{
+    const response=await fetch(url.toString(),{
+      signal:controller.signal,
+      headers:{"Accept":"application/json"}
+    });
+    let data=null;
+    const text=await response.text();
+    try{data=text?JSON.parse(text):null}catch{}
+    if(!response.ok){
+      const detail=data?.error||data?.message||text||`HTTP ${response.status}`;
+      throw new Error(`新聞來源連線失敗（${response.status}）：${String(detail).slice(0,300)}`);
+    }
+    const raw=Array.isArray(data?.articles)?data.articles:[];
+    return dedupeArticles(raw.map(a=>{
+      const uri=a.url||"";
+      let domain=a.domain||"";
+      if(!domain&&uri){
+        try{domain=new URL(uri).hostname.replace(/^www\./,"")}catch{}
+      }
+      return{
+        title:cleanText(a.title||""),
+        url:uri,
+        domain:domain||"來源不明",
+        seen_date:a.seen_date||"",
+        language:a.language||"",
+        sourcecountry:a.sourcecountry||"",
+        image:a.image||""
+      }
+    }).filter(a=>a.title&&/^https?:\/\//i.test(a.url)));
+  }catch(e){
+    if(e?.name==="AbortError")throw new Error("新聞來源連線逾時，請稍後再試。");
+    throw e;
+  }finally{
+    clearTimeout(timer);
+  }
+}
 async function collectNews(topic){setProgress("正在搜尋 GDELT：最近 24 小時…");let items=await gdeltOnce(topic,"1d"),window="最近 24 小時";if(items.length<MAX_ITEMS){setProgress(`最近 24 小時找到 ${items.length} 則；擴大至最近 3 天…`);items=dedupeArticles([...items,...await gdeltOnce(topic,"3d")]);window="最近 3 天"}if(items.length<MAX_ITEMS){setProgress(`目前找到 ${items.length} 則；擴大至最近 7 天…`);items=dedupeArticles([...items,...await gdeltOnce(topic,"7d")]);window="最近 7 天"}return{items:items.slice(0,MAX_CANDIDATES),window}}
 class GeminiError extends Error{constructor(status,detail,model=""){super(`Gemini ${status}${model?` (${model})`:""}: ${String(detail).slice(0,800)}`);this.status=status;this.detail=String(detail);this.model=model}}
 async function geminiFetch(key,url,options={}){return fetch(url,{...options,headers:{"x-goog-api-key":key,...(options.body?{"Content-Type":"application/json"}:{}),...(options.headers||{})}})}
